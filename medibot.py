@@ -1,102 +1,285 @@
 import os
 import streamlit as st
+from dotenv import load_dotenv, find_dotenv
 
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.chains import RetrievalQA
-
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
-from langchain_huggingface import HuggingFaceEndpoint
+
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 from langchain_groq import ChatGroq
 
 
-## Uncomment the following files if you're not using pipenv as your virtual environment manager
-#from dotenv import load_dotenv, find_dotenv
-#load_dotenv(find_dotenv())
+# ============================================================
+# Configuration
+# ============================================================
+
+DB_FAISS_PATH = "vectorstore/db_faiss"
+load_dotenv(find_dotenv(), override=False)
 
 
-DB_FAISS_PATH="vectorstore/db_faiss"
+# ============================================================
+# Load FAISS Vector Store
+# ============================================================
+
 @st.cache_resource
 def get_vectorstore():
-    embedding_model=HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
-    db=FAISS.load_local(DB_FAISS_PATH, embedding_model, allow_dangerous_deserialization=True)
+
+    embedding_model = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    db = FAISS.load_local(
+        DB_FAISS_PATH,
+        embedding_model,
+        allow_dangerous_deserialization=True
+    )
+
     return db
 
 
-def set_custom_prompt(custom_prompt_template):
-    prompt=PromptTemplate(template=custom_prompt_template, input_variables=["context", "question"])
+# ============================================================
+# Custom Prompt
+# ============================================================
+
+def set_custom_prompt():
+
+    CUSTOM_PROMPT_TEMPLATE = """
+Use the pieces of information provided in the context to answer the user's question.
+
+Rules:
+1. Answer only using the information provided in the context.
+2. If the answer is not available in the context, say "I don't know."
+3. Do not make up information.
+4. Do not use outside knowledge.
+5. Keep the answer clear and concise.
+6. Start the answer directly without small talk.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+
+    prompt = ChatPromptTemplate.from_template(CUSTOM_PROMPT_TEMPLATE)
+
     return prompt
 
 
-def load_llm(huggingface_repo_id, HF_TOKEN):
-    llm=HuggingFaceEndpoint(
-        repo_id=huggingface_repo_id,
-        temperature=0.5,
-        model_kwargs={"token":HF_TOKEN,
-                      "max_length":"512"}
-    )
-    return llm
-
+# ============================================================
+# Main Application
+# ============================================================
 
 def main():
-    st.title("Ask Chatbot!")
 
-    if 'messages' not in st.session_state:
+    st.set_page_config(
+        page_title="MediBot",
+        page_icon="🩺",
+        layout="centered"
+    )
+
+    st.title("🩺 MediBot")
+    st.write("Ask questions based on the medical documents in the knowledge base.")
+
+    # --------------------------------------------------------
+    # Check GROQ API Key
+    # --------------------------------------------------------
+
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+
+    if not groq_api_key:
+
+        st.error(
+            "GROQ_API_KEY is not set. "
+            "Please add it to your environment or .env file as: GROQ_API_KEY=your_key"
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # Initialize Chat History
+    # --------------------------------------------------------
+
+    if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    for message in st.session_state.messages:
-        st.chat_message(message['role']).markdown(message['content'])
+    # --------------------------------------------------------
+    # Display Previous Messages
+    # --------------------------------------------------------
 
-    prompt=st.chat_input("Pass your prompt here")
+    for message in st.session_state.messages:
+
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # --------------------------------------------------------
+    # Chat Input
+    # --------------------------------------------------------
+
+    prompt = st.chat_input("Ask your medical question...")
 
     if prompt:
-        st.chat_message('user').markdown(prompt)
-        st.session_state.messages.append({'role':'user', 'content': prompt})
 
-        CUSTOM_PROMPT_TEMPLATE = """
-                Use the pieces of information provided in the context to answer user's question.
-                If you dont know the answer, just say that you dont know, dont try to make up an answer. 
-                Dont provide anything out of the given context
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-                Context: {context}
-                Question: {question}
+        # Save user message
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": prompt
+            }
+        )
 
-                Start the answer directly. No small talk please.
-                """
-        
-        #HUGGINGFACE_REPO_ID="mistralai/Mistral-7B-Instruct-v0.3" # PAID
-        #HF_TOKEN=os.environ.get("HF_TOKEN")  
+        try:
 
-        #TODO: Create a Groq API key and add it to .env file
-        
-        try: 
-            vectorstore=get_vectorstore()
+            # ------------------------------------------------
+            # Load Vector Store
+            # ------------------------------------------------
+
+            with st.spinner("Searching medical documents..."):
+
+                vectorstore = get_vectorstore()
+
             if vectorstore is None:
-                st.error("Failed to load the vector store")
 
-            qa_chain = RetrievalQA.from_chain_type(
-                llm=ChatGroq(
-                    model_name="meta-llama/llama-4-maverick-17b-128e-instruct",  # free, fast Groq-hosted model
-                    temperature=0.0,
-                    groq_api_key=os.environ["GROQ_API_KEY"],
-                ),
-                chain_type="stuff",
-                retriever=vectorstore.as_retriever(search_kwargs={'k':3}),
-                return_source_documents=True,
-                chain_type_kwargs={'prompt': set_custom_prompt(CUSTOM_PROMPT_TEMPLATE)}
+                st.error("Failed to load the FAISS vector store.")
+                st.stop()
+
+            # ------------------------------------------------
+            # Create Retriever
+            # ------------------------------------------------
+
+            retriever = vectorstore.as_retriever(
+                search_kwargs={
+                    "k": 3
+                }
             )
 
-            response=qa_chain.invoke({'query':prompt})
+            # ------------------------------------------------
+            # Create Groq LLM
+            # ------------------------------------------------
 
-            result=response["result"]
-            source_documents=response["source_documents"]
-            result_to_show=result+"\nSource Docs:\n"+str(source_documents)
-            #response="Hi, I am MediBot!"
-            st.chat_message('assistant').markdown(result_to_show)
-            st.session_state.messages.append({'role':'assistant', 'content': result_to_show})
+            llm = ChatGroq(
+                model="openai/gpt-oss-20b",
+                temperature=0,
+                groq_api_key=groq_api_key
+            )
+
+            # ------------------------------------------------
+            # Create Prompt
+            # ------------------------------------------------
+
+            prompt_template = set_custom_prompt()
+
+            # ------------------------------------------------
+            # Build Retrieval-Augmented Generation Chain
+            # ------------------------------------------------
+
+            retrieval_chain = (
+                {
+                    "context": lambda x: "\n\n".join(
+                        doc.page_content for doc in retriever.invoke(x)
+                    ),
+                    "question": RunnablePassthrough(),
+                }
+                | prompt_template
+                | llm
+                | StrOutputParser()
+            )
+
+            # ------------------------------------------------
+            # Get Response
+            # ------------------------------------------------
+
+            with st.spinner("Generating answer..."):
+
+                source_documents = retriever.invoke(prompt)
+                result = retrieval_chain.invoke(prompt)
+
+            # ------------------------------------------------
+            # Extract Answer
+            # ------------------------------------------------
+
+            response = {
+                "answer": result,
+                "context": source_documents
+            }
+
+            # ------------------------------------------------
+            # Display Assistant Response
+            # ------------------------------------------------
+
+            with st.chat_message("assistant"):
+
+                st.markdown(result)
+
+                # --------------------------------------------
+                # Display Source Documents
+                # --------------------------------------------
+
+                source_documents = response.get(
+                    "context",
+                    []
+                )
+
+                if source_documents:
+
+                    with st.expander("📚 Source Documents"):
+
+                        for i, doc in enumerate(
+                            source_documents,
+                            start=1
+                        ):
+
+                            st.markdown(
+                                f"### Source {i}"
+                            )
+
+                            if hasattr(
+                                doc,
+                                "metadata"
+                            ):
+
+                                metadata = doc.metadata
+
+                                if metadata:
+
+                                    st.write(
+                                        "Metadata:",
+                                        metadata
+                                    )
+
+                            st.write(
+                                doc.page_content
+                            )
+
+            # ------------------------------------------------
+            # Save Assistant Response
+            # ------------------------------------------------
+
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": result
+                }
+            )
 
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+
+            st.error(
+                f"Error: {str(e)}"
+            )
+
+
+# ============================================================
+# Run Application
+# ============================================================
 
 if __name__ == "__main__":
     main()

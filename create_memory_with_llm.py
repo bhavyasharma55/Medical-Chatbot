@@ -2,13 +2,13 @@ import os
 
 from langchain_huggingface import HuggingFaceEndpoint
 from langchain_core.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
+from langchain_classic.chains import RetrievalQA
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
 ## Uncomment the following files if you're not using pipenv as your virtual environment manager
-#from dotenv import load_dotenv, find_dotenv
-#load_dotenv(find_dotenv())
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 
 
 # Step 1: Setup LLM (Mistral with HuggingFace)
@@ -16,14 +16,13 @@ HF_TOKEN=os.environ.get("HF_TOKEN")
 HUGGINGFACE_REPO_ID="mistralai/Mistral-7B-Instruct-v0.3"
 
 def load_llm(huggingface_repo_id):
-    llm=HuggingFaceEndpoint(
+    llm = HuggingFaceEndpoint(
         repo_id=huggingface_repo_id,
         temperature=0.5,
-        model_kwargs={"token":HF_TOKEN,
-                      "max_length":"512"}
+        max_new_tokens=512,
+        huggingfacehub_api_token=HF_TOKEN
     )
     return llm
-
 # Step 2: Connect LLM with FAISS and Create chain
 
 CUSTOM_PROMPT_TEMPLATE = """
